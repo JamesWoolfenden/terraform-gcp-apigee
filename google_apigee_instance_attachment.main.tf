@@ -1,4 +1,6 @@
 resource "google_apigee_instance_attachment" "main" {
-  instance_id = google_apigee_instance.main.id
+  for_each = var.instances
+
+  instance_id = google_apigee_instance.main[each.key].id
   environment = google_apigee_environment.main.name
 }

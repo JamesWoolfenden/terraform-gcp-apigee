@@ -1,0 +1,177 @@
+{
+  "findings": [
+    {
+      "confidence": "high",
+      "explanation": "HLD_GCP_429 checks only runtime_database_encryption_key_name, which is set, so the deterministic pass is green. But google_apigee_organization (provider google 7.46.0) also accepts api_consumer_data_encryption_key_name and control_plane_encryption_key_name, and neither is set nor exposed as a module variable. API consumer data is the developer/app/API-key store and control-plane data is the proxy bundle and config store \u2014 both hold customer-identifying material and both fall back to Google-managed keys here. A rule cannot flag this because the attributes are simply absent and holden has no policy for them; the gap is only visible once you notice the module claims full CMEK in var.kms_key_name's description ('the runtime database and instance disks') while two other encryptable data planes exist.",
+      "file": "google_apigee_organization.main.tf",
+      "first_seen": "2026-08-26",
+      "fix_note": "Added var.encryption object carrying runtime_database_key_name, api_consumer_data_key_name, api_consumer_data_location and control_plane_key_name, all wired into google_apigee_organization.main. The example supplies a dedicated second KMS key for API consumer data with its own service-agent IAM grant. control_plane_key_name is left null in the example because control plane data is multi-regional and needs a key in a multi-region KMS location, which the example's regional key ring cannot provide.",
+      "fixable": true,
+      "id": "HOLDEN_AI_001",
+      "last_seen": "2026-08-26",
+      "line": 1,
+      "principle": "encryption",
+      "related_resources": [
+        "variable.kms_key_name",
+        "google_apigee_instance.main"
+      ],
+      "remediation": "Add optional variables api_consumer_data_encryption_key_name and control_plane_encryption_key_name (both nullable, default null) and wire them into google_apigee_organization.main. Note control-plane keys must live in the control-plane location and consumer-data keys in api_consumer_data_location, so they cannot reuse var.kms_key_name \u2014 see HOLDEN_AI_002.",
+      "resource": "google_apigee_organization.main",
+      "severity": "MEDIUM",
+      "status": "fixed",
+      "supersedes": "HLD_GCP_429",
+      "suppression_reason": null,
+      "title": "Apigee organization CMEK covers only the runtime database \u2014 API consumer data and control-plane data stay on Google-managed keys, and the module exposes no way to change that"
+    },
+    {
+      "confidence": "high",
+      "explanation": "The module takes analytics_region and location as separate variables (defaults happen to match, both europe-west2), but offers exactly one kms_key_name that is assigned to google_apigee_organization.runtime_database_encryption_key_name AND google_apigee_instance.disk_encryption_key_name. Cloud KMS keys are regional and the instance disk key must be in the instance's location, so any caller that sets location != analytics_region cannot express a valid configuration \u2014 the module forces one key into two regionally-constrained slots. It also means a single key compromise covers both the control-plane database and every runtime disk. The engine sees two resources each with a non-null CMEK attribute and passes both; it has no way to see they are the same variable or that the two region variables can diverge.",
+      "file": "variables.tf",
+      "first_seen": "2026-08-26",
+      "fix_note": "Resolved as a side effect of HOLDEN_BP_001: var.kms_key_name was split into var.runtime_database_encryption_key_name on the org and a per-entry disk_encryption_key_name inside var.instances, each regional to its own instance location.",
+      "fixable": false,
+      "id": "HOLDEN_AI_002",
+      "last_seen": "2026-08-26",
+      "line": 88,
+      "principle": "key-management",
+      "related_resources": [
+        "google_apigee_organization.main",
+        "google_apigee_instance.main",
+        "variable.analytics_region",
+        "variable.location"
+      ],
+      "remediation": "Split into two variables (e.g. runtime_database_kms_key_name and instance_disk_kms_key_name), defaulting the second to the first for backwards compatibility, and document that the instance disk key must be in var.location.",
+      "resource": "variable.kms_key_name",
+      "severity": "MEDIUM",
+      "status": "fixed",
+      "suppression_reason": null,
+      "title": "A single var.kms_key_name feeds both the org runtime-database key and the instance disk key, which have different regional constraints from the module's two independent region variables"
+    },
+    {
+      "confidence": "high",
+      "explanation": "The example stack requires apigee.googleapis.com, servicenetworking.googleapis.com, cloudkms.googleapis.com and compute.googleapis.com, but contains no google_project_service resources \u2014 data.google_project.current only reads an existing project. Apigee's service agent is one of the agents that is not created until the API is enabled, so google_project_service_identity.apigee fails outright on a clean project, taking the KMS IAM grant and the whole module with it. Holden has no rule for 'the APIs this stack needs are not enabled anywhere in the config', because it is an absence spanning four unrelated resource types. Principle is a best-fit: this is apply-time correctness, not a security control.",
+      "file": "example/examplea/google_project_service_identity.apigee.tf",
+      "first_seen": "2026-08-26",
+      "fix": "resource \"google_project_service\" \"apigee\" {\n  for_each = toset([\n    \"apigee.googleapis.com\",\n    \"servicenetworking.googleapis.com\",\n    \"cloudkms.googleapis.com\",\n    \"compute.googleapis.com\",\n  ])\n  service            = each.value\n  disable_on_destroy = false\n}\n\n# then add to google_project_service_identity.apigee:\n#   depends_on = [google_project_service.apigee]",
+      "fixable": true,
+      "id": "HOLDEN_AI_003",
+      "last_seen": "2026-08-26",
+      "line": 1,
+      "principle": "reliability",
+      "related_resources": [
+        "data.google_project.current",
+        "google_service_networking_connection.apigee",
+        "google_kms_crypto_key.apigee",
+        "module.apigee"
+      ],
+      "remediation": "Add google_project_service resources for apigee.googleapis.com, servicenetworking.googleapis.com, cloudkms.googleapis.com and compute.googleapis.com in example/examplea, and make google_project_service_identity.apigee and google_service_networking_connection.apigee depend_on them.",
+      "resource": "google_project_service_identity.apigee",
+      "severity": "MEDIUM",
+      "status": "fixed",
+      "suppression_reason": null,
+      "title": "Example enables no Google APIs, yet depends on the Apigee service agent existing \u2014 google_project_service_identity will fail on a project where apigee.googleapis.com is not already on"
+    },
+    {
+      "confidence": "medium",
+      "explanation": "module.apigee correctly depends_on google_kms_crypto_key_iam_member.apigee_service_agent, so ordering is right \u2014 but Cloud IAM grants return success 30-60 seconds before they are actually enforceable, and Apigee organization creation validates the service agent's access to runtime_database_encryption_key_name immediately. This is the IAM eventual-consistency blind spot: the dependency graph looks correct to any static analyser, so no rule can fire, yet the first terraform apply on a fresh project intermittently fails. Principle is a best-fit; this is apply-time flakiness, not a security gap.",
+      "file": "example/examplea/module.apigee.tf",
+      "first_seen": "2026-08-26",
+      "fix": "resource \"time_sleep\" \"kms_iam_propagation\" {\n  depends_on      = [google_kms_crypto_key_iam_member.apigee_service_agent]\n  create_duration = \"60s\"\n}\n\n# then in module.apigee replace the google_kms_crypto_key_iam_member entry in depends_on with:\n#   time_sleep.kms_iam_propagation",
+      "fixable": true,
+      "id": "HOLDEN_AI_004",
+      "last_seen": "2026-08-26",
+      "line": 13,
+      "principle": "reliability",
+      "related_resources": [
+        "google_kms_crypto_key_iam_member.apigee_service_agent",
+        "google_apigee_organization.main"
+      ],
+      "remediation": "Insert a time_sleep between the KMS IAM member and the module, and have module.apigee depend on the sleep instead of the IAM member directly.",
+      "resource": "module.apigee",
+      "severity": "LOW",
+      "status": "fixed",
+      "suppression_reason": null,
+      "title": "KMS IAM grant to the Apigee service agent is ordered but not propagation-delayed \u2014 first apply commonly fails creating the org with a cryptoKeyEncrypterDecrypter permission error"
+    },
+    {
+      "confidence": "high",
+      "explanation": "variables.tf describes authorized_network as 'Self-link of the VPC peered with the Apigee runtime', but the example supplies google_compute_network.apigee.id, which renders as projects/<p>/global/networks/apigee-network, not the self_link URL. This is the GCP .name / .self_link / .id blind spot: the module's only validation is length(trimspace(...)) > 0, so any of the three passes, and the deterministic engine sees a non-empty string and moves on. If the Apigee API stores a different normalised form than what is written, authorized_network is ForceNew on google_apigee_organization \u2014 a perpetual diff there proposes destroying the organization.",
+      "file": "example/examplea/module.apigee.tf",
+      "first_seen": "2026-08-26",
+      "fix_note": "Apigee documents two accepted forms for authorized_network: the bare network name for a network in the same project, and projects/{host-project-id}/{region}/networks/{network-name} for a shared VPC. google_compute_network.id renders projects/*/global/networks/* and the self_link renders an https:// URL, so neither matched either accepted form and the old description was wrong as well as the example. var.authorized_network now documents both forms and validates against them, and the example passes google_compute_network.apigee.name. Caveat: the provider binary's embedded schema description is truncated to one sentence, so this rests on the registry documentation rather than on schema introspection.",
+      "fixable": true,
+      "id": "HOLDEN_AI_005",
+      "last_seen": "2026-08-26",
+      "line": 9,
+      "principle": "maintainability",
+      "related_resources": [
+        "variable.authorized_network",
+        "google_apigee_organization.main",
+        "google_compute_network.apigee"
+      ],
+      "remediation": "Pick one form and enforce it: either change the variable description to 'network name or projects/<p>/global/networks/<n> path' and keep .id, or change the example to google_compute_network.apigee.self_link. Add a regex validation to var.authorized_network matching the chosen form so callers cannot drift.",
+      "resource": "module.apigee",
+      "severity": "LOW",
+      "status": "fixed",
+      "suppression_reason": null,
+      "title": "var.authorized_network is documented as a self-link but the example passes google_compute_network.apigee.id, and the Apigee API normalises it \u2014 risk of a perpetual diff"
+    },
+    {
+      "confidence": "high",
+      "explanation": "This is the inconsistency pattern: the example deliberately guards google_kms_crypto_key.apigee with lifecycle { prevent_destroy = true }, showing the author does think about destroy safety \u2014 but the Apigee organization, the one-per-project resource holding all API proxies, environments, developers, apps and keys, has no deletion protection at all, in either the module or the example. A rule cannot flag this because prevent_destroy is present somewhere in the config and absent elsewhere; only comparing the two shows the asymmetry. Worth noting the prevent_destroy blind spot too: it only holds while the resource block exists, so deleting google_kms_crypto_key.apigee.tf still destroys the key.",
+      "file": "google_apigee_organization.main.tf",
+      "first_seen": "2026-08-26",
+      "fixable": false,
+      "id": "HOLDEN_AI_006",
+      "last_seen": "2026-08-26",
+      "line": 1,
+      "principle": "backup-and-recovery",
+      "related_resources": [
+        "example/examplea/google_kms_crypto_key.apigee",
+        "google_apigee_environment.main",
+        "google_apigee_instance.main"
+      ],
+      "remediation": "No module change. Callers deploying production Apigee should add lifecycle { prevent_destroy = true } to their own root configuration, where the literal can be set per environment.",
+      "resource": "google_apigee_organization.main",
+      "severity": "MEDIUM",
+      "status": "wont_fix",
+      "suppression_reason": "Withdrawn on review. The consistency premise was wrong: prevent_destroy on google_kms_crypto_key is near-boilerplate for that resource type, because KMS keys cannot be deleted from GCP at all, so its presence there is not a destroy-safety stance the organization then fails to match. Stripped of that framing the finding reduces to 'the Apigee org has no deletion protection', whose concrete damage \u2014 the seven-day soft delete blocking re-creation in the same project \u2014 is already addressed by var.retention (HOLDEN_BP_002), which the example sets to MINIMUM. The proposed remediation was also wrong for a reusable module: prevent_destroy cannot reference a variable, so adding it here would permanently block terraform destroy for every consumer with no opt-out, and would have broken the example's own make destroy target fixed in HOLDEN_BP_007.",
+      "title": "The KMS key has prevent_destroy but the Apigee organization it protects does not \u2014 terraform destroy wipes every proxy, developer and API key while the key survives"
+    },
+    {
+      "confidence": "medium",
+      "explanation": "prefix_length = 16 reserves 65,536 RFC1918 addresses for Service Networking peering, auto-allocated from an unspecified base. The module creates one Apigee instance, which needs a /22 for the runtime plus a /28 for troubleshooting. An auto-allocated /16 has a materially higher chance of overlapping an on-prem or partner range once the VPC is peered outward, and a peering range cannot be shrunk without tearing down the connection. HLD_GCP_340 is suppressed on this resource for a different reason (example-only), and no rule evaluates prefix_length against what the peered service actually consumes.",
+      "file": "example/examplea/google_compute_global_address.apigee.tf",
+      "first_seen": "2026-08-26",
+      "fix": "  prefix_length = 21",
+      "fixable": true,
+      "id": "HOLDEN_AI_007",
+      "last_seen": "2026-08-26",
+      "line": 2,
+      "principle": "network-security",
+      "related_resources": [
+        "google_service_networking_connection.apigee",
+        "google_compute_network.apigee",
+        "google_apigee_instance.main"
+      ],
+      "remediation": "Set prefix_length = 21 (or 20 to leave headroom for a second Apigee instance) on google_compute_global_address.apigee, and pin the base with an explicit address so the allocation is predictable.",
+      "resource": "google_compute_global_address.apigee",
+      "severity": "LOW",
+      "status": "fixed",
+      "suppression_reason": null,
+      "title": "PSA peering range reserved as a /16 where Apigee needs a /22 plus a /28 per instance"
+    }
+  ],
+  "scan_date": "2026-08-26T00:00:00Z",
+  "scan_path": ".",
+  "suggested_policies": [
+    {
+      "implemented_as": "HLD_GCP_526",
+      "implemented_in": "JamesWoolfenden/holden@288e670 policies/gcp/apigee/organization-api-consumer-data-cmek.yaml",
+      "rationale": "google_apigee_organization has exactly one policy today (HLD_GCP_429, runtime_database_encryption_key_name). The provider also exposes api_consumer_data_encryption_key_name, which encrypts the API consumer data store \u2014 developers, apps, API keys and API products, i.e. the customer-identifying half of an Apigee org. Leaving it unset silently falls back to a Google-managed key, so an org can pass HLD_GCP_429 and still hold PII under Google-managed encryption. The check is a plain not_null on a single attribute of a single resource type and fires correctly on any Terraform using it, so it belongs in the deterministic engine rather than here.",
+      "status": "implemented",
+      "yaml": "id: HLD_GCP_526\ncloud: gcp\nname: Apigee organizations must use a customer-managed encryption key for API consumer data\nprinciple: encryption\nseverity: MEDIUM\nrationale: |\n  api_consumer_data_encryption_key_name selects the Cloud KMS key protecting an Apigee\n  organization's API consumer data store, which holds developers, developer apps, API\n  products and API keys. When it is unset the data is encrypted with a Google-managed key,\n  so the organization retains no ability to revoke access by disabling or destroying a key,\n  and no key-level audit trail over that data. An organization that already sets\n  runtime_database_encryption_key_name still leaves this plane on Google-managed encryption.\nremediation: |\n  Set api_consumer_data_encryption_key_name on google_apigee_organization to the resource\n  name of a Cloud KMS key in the organization's api_consumer_data_location, and grant the\n  Apigee service agent roles/cloudkms.cryptoKeyEncrypterDecrypter on that key:\n\n    resource \"google_apigee_organization\" \"main\" {\n      project_id                            = var.project_id\n      api_consumer_data_location            = \"europe-west2\"\n      api_consumer_data_encryption_key_name = google_kms_crypto_key.consumer_data.id\n    }\nresources:\n  google_apigee_organization:\n    path: api_consumer_data_encryption_key_name\n    not_null: true\n"
+    }
+  ],
+  "suggested_suppressions": []
+}

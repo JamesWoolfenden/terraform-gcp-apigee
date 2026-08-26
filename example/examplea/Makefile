@@ -40,14 +40,15 @@ check: init
 	terraform plan -detailed-exitcode
 
 destroy: init
-	terraform destroy -force
+	terraform destroy -auto-approve
 
 docs:
 	terraform-docs md . > README.md
 
 valid:
 	-terraform fmt -recursive
-	-checkov -d . --external-checks-dir ../../checkov
+	-holden scan . --targets terraform
+	-checkov -d .
 	-terrascan scan
 	docker pull checkmarx/kics:latest
 	docker run -v $(CURDIR):/path checkmarx/kics:latest scan --path /path

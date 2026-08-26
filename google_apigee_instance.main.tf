@@ -1,8 +1,15 @@
 resource "google_apigee_instance" "main" {
-  name                     = var.instance_name
-  location                 = var.location
+  for_each = var.instances
+
+  name                     = each.key
+  location                 = each.value.location
   org_id                   = google_apigee_organization.main.id
-  disk_encryption_key_name = var.kms_key_name
+  disk_encryption_key_name = each.value.disk_encryption_key_name
   description              = var.description
-  ip_range                 = var.ip_range
+  ip_range                 = each.value.ip_range
+
+  timeouts {
+    create = var.timeouts.create
+    delete = var.timeouts.delete
+  }
 }

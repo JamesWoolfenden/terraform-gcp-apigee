@@ -3,9 +3,9 @@ output "organization_id" {
   description = "ID of the Apigee organization"
 }
 
-output "instance_id" {
-  value       = google_apigee_instance.main.id
-  description = "ID of the Apigee runtime instance"
+output "instance_ids" {
+  value       = { for name, instance in google_apigee_instance.main : name => instance.id }
+  description = "IDs of the Apigee runtime instances, keyed by instance name"
 }
 
 output "environment_id" {
@@ -13,7 +13,7 @@ output "environment_id" {
   description = "ID of the Apigee environment"
 }
 
-output "host" {
-  value       = google_apigee_instance.main.host
-  description = "Internal hostname of the Apigee runtime instance"
+output "hosts" {
+  value       = { for name, instance in google_apigee_instance.main : name => instance.host }
+  description = "Internal hostnames of the Apigee runtime instances, keyed by instance name"
 }
